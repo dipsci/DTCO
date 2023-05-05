@@ -1,7 +1,17 @@
-# class CP Analysis
-# Revision History:
-# 2021/10/26 hockchen init
-# 2021/11/09 hockchen update pass core profile 3D 
+'''
+CP Analysis Utility
+
+Copyright (C) 2022, by DipSci Technology Corpopation, LTD.
+This software tool is independently developed and owned by DipSci Technology Co., Ltd.
+It is freely licensed to industry and academia to use, share, reproduce, or improve, provided 
+this copyright notice is retained or the initial creater is listed on the contributors list.
+Derivatives developed for profit based on this software tool must still include this copyright 
+notice or credit the initial creater on the contributors list.
+
+Revision History:
+2021/10/26 hockchen init
+2021/11/09 hockchen update pass core profile 3D 
+'''
 
 import pandas as pd
 import numpy as np
