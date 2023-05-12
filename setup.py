@@ -7,7 +7,7 @@ with open(path.join(this_directory, 'README.md'), encoding='utf-8') as f:
 
 setuptools.setup(
     name = 'DTCO',
-    version = '0.1.0',
+    version = '0.1.3',
     author = 'hockchen',
     author_email = 'hock.chen@dipsci.com',
     description = 'DTCO Utility',
