@@ -1,2 +1,3 @@
 # -*- coding: utf-8 -*-
-from copernic.classCPAnalysis import *
+from copernic.classDTCO import *
+from copernic.classVSDataset import *
