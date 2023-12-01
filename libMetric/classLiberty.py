@@ -20,7 +20,7 @@ import scipy.linalg
 import gzip, re, json 
 import matplotlib.pyplot as plt
 from scipy import interpolate
-from mpl_toolkits.mplot3d import Axes3D
+#from mpl_toolkits.mplot3d import Axes3D
 
 class Liberty:
     def __init__(self):
@@ -678,51 +678,6 @@ class Liberty:
         pi,po = np.array(piL).mean(),np.array(poL).mean()
         return pi+po,pi,po
     
-    '''
-    def lookup_cell_power(self,cnode,ctype,related_pg_pin='VDD',trans=0.02,load=0.001,
-        onlyClock=False,onlyOutput=False,onlyInput=False,onlyData=False,dflag=False):
-        vl = np.array([])
-        for pin in cnode['pin'].keys():
-            inode = cnode['pin'][pin]
-            clock = inode['clock'].upper() if inode.get('clock')!=None else 'false'
-            di = inode['direction'].upper() if inode.get('direction')!=None else 'BID'
-            if inode.get('internal_power')==None:
-                continue
-            if onlyInput==True:
-                if di[0]!='I':
-                    continue
-            if onlyOutput==True:
-                if di[0]!='O':
-                    continue
-            if onlyData==True:
-                if di[0]=='O' or clock[0]=='T': # clock:true
-                    continue
-            if onlyClock==True: # grab clock power only
-                if clock[0]!='T': # clock:true
-                    continue
-            tables = inode['internal_power']
-            for tnode in tables:
-                if tnode.get(ctype)==None:
-                    continue
-                pg = tnode['related_pg_pin'].strip('"') if tnode.get('related_pg_pin')!=None else ''
-                if bool(re.match(pg,related_pg_pin))==False:
-                    continue
-                rinp = tnode['related_pin'] if tnode.get('related_pin')!=None else ''
-                cond = tnode['when'] if tnode.get('when')!=None else ''            
-                lut = tnode[ctype]
-                vi = self.table_lookup(lut,trans,load,dflag)
-                vl = np.append(vl,vi)
-                if dflag:
-                    print(f'{rinp}->{pin}@({cond})= {vi}')
-        avg = vl.mean() if vl.size>0 else 0
-        std = vl.std() if vl.size>0 else 0
-        chk = std*100/avg if avg>0 else 0
-        if chk>=15: # warning threshold
-            print(f'WARN! {ctype} variation among {vl.size} lut {chk:.2f}% > 15%' )
-        if dflag:
-            print(f'mean of {vl.size} lut= {avg}')
-        return avg
-    '''
     def lookup_cell_slope(self,cnode,dflag=False):
         lutT = self.get_cell_timing(cnode,ctype='transition')
         #lutT = {v:lutT[v] for v in lutT if 'disable' not in str(v)} # waive tri-state disable
@@ -825,9 +780,8 @@ class Liberty:
                 px,py = np.meshgrid(tx,ty)
                 pz = np.dot(T,C).reshape(px.shape)
                 gx,gy = np.meshgrid(x,y)
-                f = plt.figure()
-                f.set_size_inches(8,7)
-                ax = Axes3D(f)
+                plt.figure(figsize=(8,7))
+                ax = plt.subplot(111,projection='3d')
                 ax.scatter(gx,gy,z.reshape(gx.shape),s=10,label='original')
                 ax.plot_surface(px,py,pz,alpha=0.2,edgecolor='w',zorder=0)
                 ax.scatter(load,trans,np.dot(np.array([1]+
@@ -837,7 +791,7 @@ class Liberty:
                 ax.set_xlabel('index_2')
                 ax.set_ylabel('index_1')
                 ax.view_init(30,250)
-                plt.show()
+                plt.tight_layout()
             y,x = np.asarray(trans),np.asarray(load) # scalar to array
             T = np.array([np.ones(x.shape)]+
                     [x**i for i in range(1,order+1)]+
@@ -852,9 +806,8 @@ class Liberty:
            wherein lut is a dictionary as {'index_1':[...],'index_2':[...],'values':[...]}'''
         if isinstance(keys,list)==False:
             keys = [keys]
-        f = plt.figure()
-        f.set_size_inches(8,7)
-        ax = Axes3D(f)
+        plt.figure(figsize=(8,7))
+        ax = plt.subplot(111,projection='3d')
         for k in keys:
             if len(k)==3: # unpack timing
                 arc,ttype,ctype = k
@@ -883,7 +836,8 @@ class Liberty:
         ax.set_ylabel(f'index_1:{xylabel[1]}') # tran, data
         ax.set_zlabel('values')
         plt.legend()
-        plt.show()
+        ax.set_box_aspect(None, zoom=1.1)
+        plt.tight_layout(rect=(0,0,1,1))
     
     def plot_cell_timing(self,cnode,arc,ctype,xylabel=('load','trans')):
         lutT = self.get_cell_timing(cnode,ctype=ctype)
@@ -900,10 +854,9 @@ class Liberty:
         cell = cnode['name']
         y,x,ts = map(np.array,luts.values())
         y,x,th = map(np.array,luth.values())
-        f = plt.figure()
-        f.set_size_inches(8,7)
-        f.subplots_adjust(hspace=0.05,wspace=0.05,top=0.95,right=0.7)
-        ax = Axes3D(f)
+        
+        plt.figure(figsize=(8,7))
+        ax = plt.subplot(111,projection='3d')
         gx,gy = np.meshgrid(x,y)
         px = np.arange(0,x[-1],(x[-1]/30)) # col
         py = np.arange(0,y[-1],(y[-1]/30)) # row
@@ -925,7 +878,7 @@ class Liberty:
         l2 = plt.matplotlib.lines.Line2D([0],[0],c='blue',marker='o')
         l3 = plt.matplotlib.lines.Line2D([0],[0],c='red',marker='o')
         ax.legend([l1,l2,l3], ['clock','setup','hold'],numpoints=1)
-        plt.show()
+        plt.tight_layout(rect=(0,0,1,0.98))
     
     # metric extraction
     def cellLutCoeff(self,cnode,trans=0.04,load=0.0017,todf=True):
@@ -1046,7 +999,7 @@ class LibertyMetric(Liberty):
             C = [C[0],0,0,C[1],C[2],0] # pad zeros for x terms
             #p = np.dot(np.array([1,y,y**2]).T,C)
             #C = np.pad(C,(0,6-len(C))) # pad zero
-            p = np.dot(np.array([np.ones_like(x),x,x**2,y,y**2,x*y]).T,C)
+        p = np.dot(np.array([np.ones_like(x),x,x**2,y,y**2,x*y]).T,C)
         # debug LSC regression
         if dflag:
             ty,tx = np.linspace(y*0.5,y*1.5,20),np.linspace(x*0.5,x*1.5,20)
@@ -1054,15 +1007,14 @@ class LibertyMetric(Liberty):
             px,py = gx.ravel(),gy.ravel()
             pz = np.dot(np.array([np.ones_like(px),px,px**2,py,py**2,px*py]).T,C)
             pz = pz.reshape(gx.shape)
-            f = plt.figure()
-            f.set_size_inches(8,7)
-            ax = Axes3D(f)
+            plt.figure(figsize=(8,7))
+            ax = plt.subplot(111,projection='3d',title='LS Regression')
             ax.plot_surface(gx,gy,pz,alpha=0.2,edgecolor='w',zorder=0)
             ax.scatter(x,y,p,s=50,color='r',label='querry')
             ax.text(x,y,p,s=f'{p:.3f} @{y:.3f},{x:.3f}')
             ax.set_xlabel('index_2')
             ax.set_ylabel('index_1')
-            plt.show()
+            plt.tight_layout()
         return p
     
     def cellLSCSurface(self,dmc,keys,x=np.linspace(0,0.01,20),y=np.linspace(0,0.06,20)):
@@ -1074,9 +1026,8 @@ class LibertyMetric(Liberty):
         gx,gy = np.meshgrid(x,y)
         px,py = map(np.ravel,(gx,gy))
         T = np.array([np.ones(px.shape),px,px**2,py,py**2,px*py]).T # LS(order=2) grid
-        f = plt.figure(figsize=(8,7))
-        f.set_size_inches(8,7)
-        ax = Axes3D(f)
+        plt.figure(figsize=(8,7))
+        ax = plt.subplot(111,projection='3d',title='LS Surface')
         for k in keys:
             C = dmc[k]['coeff']
             pz = np.dot(T,C).reshape(gx.shape)
@@ -1089,7 +1040,7 @@ class LibertyMetric(Liberty):
         ax.set_zlabel('values')
         ax.view_init(30,250)
         plt.legend()
-        plt.show()
+        plt.tight_layout()
         
     def dataAugmentation(self,df):
         df['ta'] = df[['tr','tf']].mean(axis=1) # average cell transition
