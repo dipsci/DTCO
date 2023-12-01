@@ -10,20 +10,21 @@ notice or credit the initial creater on the contributors list.
 
 Revision History:
 2021/10/26 hockchen init
-2021/11/09 hockchen update pass core profile 3D 
+2021/11/09 hockchen update performance profile 3D 
 2022/02/01 hockchen generated model for wafer-level CP & WAT data
 '''
 import pandas as pd
 import numpy as np
-import pickle, io
+import platform, pickle, io
 import torch # os.environ['KMP_DUPLICATE_LIB_OK']='True' for libiomp5md.dll issue
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import plotly.offline as ply
 import plotly.graph_objs as go
-from scipy import interpolate, stats, linalg
+from plotly.subplots import make_subplots
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-#from scipy.interpolate import griddata
+from scipy import interpolate, stats, linalg
+from scipy.ndimage import uniform_filter
 
 #pd.set_option('expand_frame_repr', False)
 #pd.set_option('precision',8)
@@ -47,6 +48,63 @@ class DTCO:
         h = round((100-p)/2,1)
         h = 0 if h==0 else h
         return h,100-h
+    
+    # sigma outlier removal, NOTE! might cause unusuall data distribution
+    def filterGridData(self,gd,mask,sigma=None,radius=0):
+        '''apply sigma outlier removal and average filtering to the griddata (batch,H,W,C) as PIL'''
+        #mask = (~np.isnan(gd)).any(axis=(0,3)) # (H, W)
+        #mask = np.expand_dims(mask,axis=(0,3)) # (1, H, W, 1)
+        print(f'{sigma} sigma outlier removal ...')
+        s1,s2 = self.sigma_percentage(sigma)
+        m = np.nanpercentile(np.where(gd>0,gd,np.nan),[s1,s2],axis=(1,2)) # (2, batch, C)
+        m = np.expand_dims(m,axis=(2,3)) # (2, batch, 1, 1, C)
+        #gt = np.clip(gd, 0, m[1]) # may cause illregular distribution
+        gt = np.where((m[0]<=gd)&(gd<=m[1]), gd, np.nan) # removal might cause data gap
+        # smooth filtering +/-radius (Sample Repair for Wafer Defects)
+        if radius>0: # kernel size = radius*2+1
+            print(f'apply smooth filtering, radius={radius} ...')
+            gt = np.where(gt>0, gt, m[0]) # replace nan to 0 for smooth filtering (non-zero might cause illegal samples)
+            gt = uniform_filter(gt, size=(1,radius,radius,1), mode='reflect') # avg.filter on H,W layers
+        gt = np.where(mask.reshape(1,*mask.shape,1), gt, np.nan) # apply mask
+        #np.set_printoptions(precision=3, suppress=True)
+        print('org vs. new min:\n',np.c_[np.nanmin(np.where(gd>0,gd,np.nan),axis=(0,1,2)),np.nanmin(gt,axis=(0,1,2))].round(3))
+        print('org vs. new max:\n',np.c_[np.nanmax(np.where(gd>0,gd,np.nan),axis=(0,1,2)),np.nanmax(gt,axis=(0,1,2))].round(3))
+        print('org vs. new samples:\n',np.c_[np.sum(gd>0,axis=(0,1,2)),np.sum(gt>0,axis=(0,1,2))].round(3))
+        return gt
+
+    def genFakeData(self,model_pkl,num=300,bound=False,todf=True,outFile=None):
+        '''load generator model (pickle) and generate wafer-level CP and WAT data,
+           drop fake data based on the raw data boundaries if bound is set
+        '''
+        print(f'load generated model & parameter {model_pkl} ...')
+        with open(model_pkl, 'rb') as f:
+            pkg = pickle.load(f)
+            latent_size = pkg['latent_size']
+            mask = pkg['mask']
+            scale = pkg['scale']
+            features = pkg['features']
+            G = torch.jit.load(io.BytesIO(pkg['model']), 'cpu')
+        
+        noises = torch.randn(num,latent_size) # generate num wafers 
+        x = G(noises).detach().numpy().transpose(0,2,3,1) # as (PIL) fasion (batch,H,W,C)
+        # normalize generated data [-1,1] to original scale 
+        dmin,dmax = np.zeros_like(scale[0]),scale[1]
+        dmin,dmax = dmin.reshape(1,1,1,-1),dmax.reshape(1,1,1,-1)
+        xm = np.quantile(x,[0,1],axis=(0,1,2)) # min-max per channel
+        x = (x-xm[0])/(xm[1]-xm[0])*(dmax-dmin) + dmin
+        x = np.where(mask[...,np.newaxis],x,np.nan) # apply mask
+        x[...,2:6] = np.clip(x[...,2:6],scale[0,2:6],scale[1,2:6]) # clip PC 
+        size = np.all(x>0,axis=3).sum()
+        
+        if bound: # drop fake data based on the raw data boundaries
+            x = np.where((scale[0]<=x)&(x<=scale[1]), x, np.nan) 
+            print(f'clip data within the original scale, yield: {np.all(x>0,axis=3).sum()/size*100:.2f} %')
+        if todf==True: # convert grid data to dataframe
+            x = self.convert2CSV(x,features,outFile)
+        elif outFile!=None:
+            np.save(outFile, x)
+            print(f'generated grid data was saved into {outFile} ...')
+        return x
 
     def convert2CSV(self,data,features,outCSV=None):
         '''convert generated data in PIL style (batch,H,W,C) to Dataframe'''
@@ -70,92 +128,34 @@ class DTCO:
         gz = interpolate.griddata(np.stack([x,y],axis=1),z,(gx,gy),method='cubic',fill_value=0) # 1st
         return gx,gy,gz
 
-    def genFakeData(self,model_pkl,num=300,outCSV=None):
-        '''load generator model (pickle) and generate wafer-level CP and WAT data'''
-        print(f'load generated model & parameter {model_pkl} ...')
-        with open(model_pkl, 'rb') as f:
-            pkg = pickle.load(f)
-            mask = pkg['mask']
-            scale = pkg['scale']
-            features = pkg['features']
-            G = torch.jit.load(io.BytesIO(pkg['model']), 'cpu')
-        
-        print(f'generate {num} wafer-level CP & WAT data ...')
-        latent_size = 100
-        noises = torch.randn(num,latent_size) # generate num wafers 
-        x = G(noises).detach().numpy().transpose(0,2,3,1) # as grid data (PIL) fasion (batch,H,W,C)
-    
-        # normalization & legalization
-        H,W,C = x.shape[1:] # PIL shape
-        dmin,dmax = scale.reshape(C,1,1,1,2).T
-        xmin = np.nanmin(x,axis=(0,1,2,)).reshape(1,1,1,-1)
-        xmax = np.nanmax(x,axis=(0,1,2,)).reshape(1,1,1,-1)
-        x = (x-xmin)/(xmax-xmin)*dmax # set dmin=0, but keep dmin(real min)
-        x = np.where((dmin<=x)&(x<=dmax), x, np.nan) # drop out of scale range
-        x = np.where(mask.reshape(1,H,W,1),x,np.nan) # apply wafer mask
-        
-        # convert grid data to dataframe
-        df = self.convert2CSV(x,features,outCSV)
-        return df
-
-    def showData(self,df,feature='SIDD',num=None,ncol=None,dtype='2d',view=(90,90),zoom=1.7):
-        num = num or (30 if df.shape[0]>30 else df.shape[0])
-        ncol = ncol or 10
-        nrow = int(np.ceil(num/ncol))
-        plt.figure(figsize=(ncol*1.8,nrow*1.8))
-        plt.suptitle(f'{feature} {dtype.upper()}',y=0.99,c='b')
-        for i in range(num):
-            x,y,z = df.loc[i+1][['X','Y',feature]].values.T
-            if dtype!='3d':
-                ax = plt.subplot(nrow,ncol,i+1,title=f'{i+1}')
-                ax.tricontourf(x,y,z,levels=20)
-            else:
-                ax = plt.subplot(nrow,ncol,i+1,title=f'{i+1}',projection='3d')
-                ax.plot_trisurf(x,y,z,antialiased=False,linewidth=0,edgecolors='none',cmap='viridis')
-                ax.view_init(*view)
-                ax.set_box_aspect(None, zoom=zoom)
-            ax.invert_yaxis() # set origin to top left
-            ax.axis('off')
-        plt.tight_layout(rect=(0,0,1,0.98))
-    
+    # utilities for dataframe
     def filterData(self,df,itemL,sigma=2.5):
-        '''filter outlier, where the specified df should be indexed with WID'''
+        '''apply sigma outlier removal to the dataframe, assuming the df is indexed with WID'''
         s1,s2 = self.sigma_percentage(sigma)
         num = df.shape[0]
         for item in itemL:
             m = df[item].quantile([s1/100,s2/100])
             df = df[(m[s1/100]<=df[item])&(df[item]<=m[s2/100])]
         print(f'filter out {num-df.shape[0]} out of {num} samples, {df.shape[0]*100/num:.2f}%')
-        #widL = df.index.unique().tolist()
-        #dL = []
-        #for wid in widL:
-        #    d = df.loc[wid]
-        #    for item in itemL:
-        #        m = d[item].quantile([s1/100,s2/100])
-        #        d = d[(m[s1/100]<=d[item])&(d[item]<=m[s2/100])]
-        #    if nlimit!=None and d.shape[0]<nlimit:
-        #        print(f'WARN! drop unqualified wafer: {wid}, size={d.shape[0]}<{nlimit}')
-        #    else:
-        #        dL += [d]
-        #dt = None if len(dL)==0 else pd.concat(dL)
-        #print(f'filter out {df.shape[0]-dt.shape[0]} samples, {dt.shape[0]*100/df.shape[0]:.2f}%')
         return df
 
     def featureScatter(self,df,wid=None,fx='ROu',fy='SIDD',sigma=None,alpha=0.5,s=5,args={'alpha':0.5}):
+        '''wafer-level feature scatter,
+           Right-click to display feature uniformity for selected targets'''
         dt = df if wid==None else df.loc[wid]
         dt = dt if sigma==None else self.filterData(dt,itemL=[fx,fy],sigma=sigma) 
         dm = dt[['X','Y','SIDD']].groupby(['X','Y']).mean().reset_index() # average surface
         widL = dt.index.unique().tolist()
         f = plt.figure(figsize=(7,6))
         ax = f.gca()
-        plt.title(f'{len(widL)} wafers: ({dt.shape[0]} samples)')
+        plt.title(f'{len(widL):,} wafers: ({dt.shape[0]:,} samples)')
         plt.scatter(dt[fx],dt[fy],s=s,alpha=alpha,edgecolors=None,picker=4)
         plt.xlabel(f'{fx}')
         plt.ylabel(f'{fy}')
         plt.grid(which='major',linestyle='-',zorder=0)
         plt.grid(which='minor',linestyle=':',zorder=0)
         plt.minorticks_on()
-        plt.tight_layout(rect=(0,0,1,0.98))
+        plt.tight_layout(rect=(0,0,1,1))
         #plt.legend(loc='center left',bbox_to_anchor=(1.0,0.5),fontsize=10)
         ann = ax.annotate('',xy=(0,0),xytext=(-50,20),textcoords="offset points",zorder=100,
             bbox=dict(boxstyle='round4', fc='linen',ec='k',lw=1),arrowprops=dict(arrowstyle='-|>'))
@@ -178,7 +178,7 @@ class DTCO:
         f.canvas.mpl_connect('button_release_event',onRelease)
 
     def featureSurface(self,df,wid=None,feature='SIDD',sigma=None,xyL=None,alpha=1,view=(70,300)):
-        '''wafer-level feature surface'''
+        '''wafer-level feature surface (uniformity)'''
         dt = df.groupby(['X','Y']).mean().reset_index() if wid==None else df.loc[wid]
         dt = dt if sigma==None else self.filterData(dt,itemL=[feature],sigma=sigma) 
         dt = dt.dropna(subset=[feature]) # drop nan features
@@ -199,7 +199,7 @@ class DTCO:
         ax.set_zlabel(feature,rotation=90)
         ax.view_init(*view)
         ax.set_box_aspect(None, zoom=1.0)
-        plt.tight_layout(rect=(0,0,1,0.98)) 
+        plt.tight_layout(rect=(0,0,1,1)) 
         ann = ax.annotate('',xy=(0,0),xytext=(-50,20),textcoords="offset points",zorder=100,
             bbox=dict(boxstyle='round4', fc='linen',ec='k',lw=1),arrowprops=dict(arrowstyle='-|>'))
         ann.set_visible(False)
@@ -217,10 +217,50 @@ class DTCO:
             ax.figure.canvas.draw_idle()
         f.canvas.mpl_connect('pick_event',lambda event: onPick(event,ax,d.set_index(['X','Y'])))
         f.canvas.mpl_connect('button_release_event',onRelease)
-        plt.show()
 
-    def featurePlotly(self,df,wid=None,feature='SIDD',sigma=3,outDir='.'):
-        '''convert vector to mesh grid with griddata (interpolation) for non-existing points'''
+    def featureDistribution(self,df,dr=None,bins=100):
+        features = df.columns[2:]
+        ncol = int((len(features)+0.5)//2)
+        plt.figure(figsize=(12,6))
+        plt.suptitle(f'{df.shape[0]:,} gen' + (f', {dr.shape[0]:,} real' if dr is not None else ''),y=0.98)
+        for i,item in enumerate(features):
+            fake = df[item].values
+            ax = plt.subplot(2,ncol,1+i)
+            ax.set_title(f'{item}',fontsize=10,color='b')
+            ax.hist(fake,bins=bins,label='fake',histtype='step',density=True)
+            #ax.set_xticks([])
+            ax.set_yticks([])
+            if dr is not None:
+                real = dr[item].values
+                ax.hist(real,bins=bins,label='real',histtype='step',density=True)
+        ax.legend()
+        plt.tight_layout(rect=(0,0,1,1))
+    
+    def batchFeature(self,df,feature='SIDD',widL=None,num=None,ncol=None,dtype='2d',view=(90,270),zoom=1.7):
+        '''Presenting wafer-level feature surface in batches'''
+        widL = widL if widL is not None else df.index.unique().tolist()
+        num = num or (30 if len(widL)>30 else len(widL))
+        ncol = ncol or 10
+        nrow = int(np.ceil(num/ncol))
+        plt.figure(figsize=(ncol*1.8,nrow*1.8))
+        plt.suptitle(f'{feature} {dtype.upper()}',y=0.99,c='b')
+        for i in range(num):
+            wid = int(widL[i])
+            x,y,z = df.loc[wid][['X','Y',feature]].dropna().values.T
+            if dtype!='3d':
+                ax = plt.subplot(nrow,ncol,i+1,title=f'{wid}')
+                ax.tricontourf(x,y,z,levels=20)
+                #ax.invert_yaxis() # set origin to bottom left, 3D view=(90,270)
+            else:
+                ax = plt.subplot(nrow,ncol,i+1,title=f'{wid}',projection='3d')
+                ax.plot_trisurf(x,y,z,antialiased=False,linewidth=0,edgecolors='none',cmap='viridis')
+                ax.view_init(*view)
+                ax.set_box_aspect(None, zoom=zoom)
+            ax.axis('off')
+        plt.tight_layout(rect=(0,0,1,1))
+        
+    def featureSurfacePlotly(self,df,wid=None,feature='SIDD',sigma=3,outDir='.'):
+        '''wafer-level feature surface (uniformity) with plotly engine'''
         dt = df if wid==None else df.loc[wid]
         dt = dt if sigma==None else self.filterData(dt.reset_index()[['X','Y',feature]],[feature],sigma=sigma)
         dt = dt.dropna(subset=[feature]) # drop nan features
@@ -237,13 +277,43 @@ class DTCO:
                 yaxis=dict(title='Y',visible=True),
                 zaxis=dict(title='Z',visible=True),
                 aspectratio=dict(x=1, y=1, z=0.5),
-                camera=dict(eye=dict(x=0, y=0, z=1.8)),
+                camera=dict(eye=dict(x=0, y=0, z=1.5)),
             )
         )
-        #fig.update_xaxes(showticklabels=False,title_text='')
-        #fig.update_yaxes(showticklabels=False,title_text='')
-        ply.plot(fig,filename=f'{outDir}/uniformity_{feature}.html',auto_open=True)
+        if 'google.colab' in platform.sys.modules:
+            fig.show() # web engine
+        else:
+            ply.plot(fig,auto_open=True)
 
+    def batchFeaturePlotly(self,df,feature='SIDD',widL=None,ncol=None,eye=dict(x=0,y=0,z=1.3),hw=(500,1000)):
+        widL = widL if widL is not None else df.index.unique().tolist()
+        num = 15 if len(widL)>15 else len(widL) # maximum 16 for visualization
+        ncol = ncol or 5
+        nrow = int(np.ceil(num/ncol))
+        HW = df[['Y','X']].max().values.T
+        fig = make_subplots(rows=nrow, cols=ncol, 
+            specs=[[{'type': 'surface'}]*ncol]*nrow, vertical_spacing=0.01, horizontal_spacing=0.01)
+        for ii in range(num):
+            wid = widL[ii]
+            gx,gy,gz = self.df2Grid(df.loc[wid],feature,*HW)
+            data = go.Surface(x=gx, y=gy, z=gz, colorscale='Viridis', showscale=False)
+            fig.add_trace(data, row=ii//ncol+1, col=ii%ncol+1)
+        fig.update_layout(
+            title='Contour Plots', height=hw[0], width=hw[1], margin=dict(l=0, r=0, t=0, b=0)
+        )
+        # update camera for each scene
+        for i in range(num):
+            fig.update_scenes(
+                row=(i//ncol)+1, col=(i%ncol)+1,
+                xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False), 
+                camera=dict(eye=eye), 
+                #camera=dict(eye=dict(x=0, y=0, z=1.3)), 
+                aspectratio=dict(x=1, y=1, z=0.5))
+        if 'google.colab' in platform.sys.modules:
+            fig.show() # web engine
+        else:
+            ply.plot(fig,auto_open=True) # plot with HTML
+    
     ### design for productivity optimization
     def waferSort(self,df,itemL=['ROu','SIDD'],nsize=None):
         indexL = df.index.names
@@ -266,7 +336,7 @@ class DTCO:
         ax1.grid(color='r',alpha=0.5,zorder=0)
         ax2.grid(color='b',ls='--',alpha=0.5,zorder=0)
         plt.title(f'Wafer Sorting by {itemL} ({nsize} wafers)')
-        plt.tight_layout(rect=(0,0,1,0.98))
+        plt.tight_layout(rect=(0,0,1,1))
         ann = ax2.annotate('',xy=(0,0),xytext=(-10,20),textcoords="offset points",zorder=100,
             bbox=dict(boxstyle='round4', fc='linen',ec='k',lw=1),arrowprops=dict(arrowstyle='-|>'))
         ann.set_visible(False)
@@ -542,7 +612,7 @@ class DTCO:
         plt.grid(which='major',linestyle='-',color='b',alpha=0.5)
         plt.grid(which='minor',linestyle=':',color='b',alpha=0.3)
         plt.minorticks_on()
-        plt.tight_layout(rect=(0,0,1,0.98))
+        plt.tight_layout(rect=(0,0,1,1))
         dr = pd.concat(drL,keys=sigmaL,names=['Sigma'])
         dm = pd.concat(dmL,keys=sigmaL,names=['Sigma'])
         return dr,dm
@@ -556,8 +626,8 @@ class DTCO:
         C2,_,_,_ = linalg.lstsq(X,y2) # inner product coefficient (late)
         t = np.arange(0,np.ceil(x.max()),0.1) # detail grid
         T = np.array([np.ones(t.shape)]+[t**i for i in range(1,order+1)]).T 
-        e1 = ' '.join([f'{v:+.1g}t^{i}' for i,v in enumerate(C1)]) # equation
-        e2 = ' '.join([f'{v:+.1g}t^{i}' for i,v in enumerate(C2)]) # equation
+        e1 = ' '.join([f'{v:+.3g}t^{i}' for i,v in enumerate(C1)]) # equation early
+        e2 = ' '.join([f'{v:+.3g}t^{i}' for i,v in enumerate(C2)]) # equation late
         p1 = np.dot(T,C1) # predict early
         p2 = np.dot(T,C2) # predict late
         plt.figure(figsize=(6,8))
@@ -567,13 +637,14 @@ class DTCO:
         plt.plot(t,p2,c='r',label='late  (predict)')
         plt.text(0,p1[0],f'{p1[0]:.2f}',c='b') # D0 early derating
         plt.text(0,p2[0],f'{p2[0]:.2f}',c='r') # D0 late derating
-        plt.title(f'{e1}\n{e2}')
+        plt.title(f'early:{e1}\nlate:{e2}')
         plt.xlabel('Distance')
         plt.ylabel('Derating')
         plt.xticks(np.arange(0,dm.index.max(),0.5))
         plt.legend()
         plt.grid()
-        return p1[0],p2[0] # D0 derating
+        plt.tight_layout(rect=(0,0,1,1))
+        return np.array([p1[0],p2[0]]).round(3) # D0 derating
     
     ### CP-WAT cross-domain features correlation & process recipe optimization
     def surfaceContour(self,df,fx,fy,fz,fsize=(7,6),levels=10):
@@ -585,7 +656,7 @@ class DTCO:
         f.set_size_inches(fsize)
         su = ax.tricontourf(x,y,z,levels=levels) #np.linspace(trange[0],trange[1],20))
         ax.scatter(mm[fx],mm[fy],marker='+',s=200,lw=2,c='y',alpha=0.8)
-        ax.text(mm[fx],mm[fy],f'{mm[[fx,fy]].values.round(3)}',c='w',fontsize=12)
+        ax.text(mm[fx],mm[fy],f'{mm[[fx,fy]].values.round(2)}',c='w',fontsize=12)
         name = '_'.join(df.index.names)
         ax.set_title(f'{fz} {name}: {len(dm)} locations, {df.shape[0]:,} samples')
         ax.set_xlabel(fx)
@@ -596,7 +667,7 @@ class DTCO:
         #ax.set_zlim(bottom=0,top=512)
         cb = f.colorbar(su,shrink=0.8,aspect=20) #ticks=range(0,520,50))
         cb.ax.tick_params(labelsize=10)    
-        plt.tight_layout(rect=(0,0,1,0.98))
+        plt.tight_layout(rect=(0,0,1,1))
     
     def scatterMatrix(self,df,itemL,s=10,alpha=0.3,sub=10): 
         corr = df[itemL].iloc[::sub].corr().values.ravel()
@@ -612,6 +683,41 @@ class DTCO:
         plt.suptitle(f'feature correlation ({len(df):,} samples, sub={sub})')
         plt.tight_layout(rect=(0,0,1,1))
         return corr.round(3)
-        
+
+    def crossProbing(self,df,f1=('ROu','SIDD'),f2=('VTS_ULVT_N','VTS_ULVT_P')):
+        (f1x,f1y),(f2x,f2y) = f1,f2
+        dm = df[[f1x,f1y,f2x,f2y]].groupby(['WID']).mean()
+        x1,y1,x2,y2 = dm.values.T
+        fig = plt.figure(figsize=(12,6))
+        ax1 = plt.subplot(121)
+        sc1 = ax1.scatter(x1,y1, picker=2, color=[(0,0,0,0.1)]*len(x1), edgecolors='none')
+        ax1.set_xlabel(f1x)
+        ax1.set_ylabel(f1y)
+        ax1.grid(which='major',linestyle='-',zorder=0)
+        ax1.grid(which='minor',linestyle=':',zorder=0)
+        ax1.minorticks_on()
+        ax2 = plt.subplot(122)
+        sc2 = ax2.scatter(x2,y2, picker=2, color=[(0,0,0,0.1)]*len(x2), edgecolors='none')
+        ax2.set_xlabel(f2x)
+        ax2.set_ylabel(f2y)
+        ax2.grid(which='major',linestyle='-',zorder=0)
+        ax2.grid(which='minor',linestyle=':',zorder=0)
+        ax2.minorticks_on()
+        plt.suptitle(f'{dm.shape[0]:,} wafers')
+        plt.tight_layout(rect=(0,0,1,1))
+        #Cursor(ax1, horizOn=True, vertOn=True, useblit=True, color='r', linewidth=1, alpha=0.5)
+        #Cursor(ax2, horizOn=True, vertOn=True, useblit=True, color='r', linewidth=1, alpha=0.5)
+        def onPick(event):
+            ind = event.ind
+            order = [v for v in range(len(sc1._offsets.data)) if v not in ind]+list(ind) # zorder
+            sc1._offsets.data[:] = sc1._offsets.data[order]
+            sc2._offsets.data[:] = sc2._offsets.data[order]
+            sc1._facecolors[:,:] = (0, 0, 0, 0.1)
+            sc2._facecolors[:,:] = (0, 0, 0, 0.1)
+            sc1._facecolors[-len(ind):,:] = (1, 0, 0, 1) 
+            sc2._facecolors[-len(ind):,:] = (1, 0, 0, 1)
+            fig.canvas.draw()
+        plt.gcf().canvas.mpl_connect('pick_event', onPick)
+    
 dtco = DTCO()
 
