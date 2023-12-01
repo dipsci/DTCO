@@ -7,7 +7,7 @@ with open(path.join(this_directory, 'README.md'), encoding='utf-8') as f:
 
 setuptools.setup(
     name = 'DTCO',
-    version = '0.1.3',
+    version = '0.1.4',
     author = 'hockchen',
     author_email = 'hock.chen@dipsci.com',
     description = 'DTCO Utility',
@@ -15,7 +15,7 @@ setuptools.setup(
     long_description_content_type='text/markdown',
     url = 'https://github.com/dipsci/DTCO',
     packages=setuptools.find_packages(),
-    keywords = ['DTCO','process monitor','liberty','metric','timing','EDA','physical design'],
+    keywords = ['DTCO','process monitor','liberty','metric','timing','EDA','physical design','WAT','CP','Binning','Virtual Silicon'],
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
