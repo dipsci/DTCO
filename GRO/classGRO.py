@@ -39,6 +39,7 @@ class ROCompiler(LibertyMetric):
         print(f'program source directory: {self.src}')
 
     def loadConfig(self,cfg):
+        self.cfg['configFile'] = cfg
         print(f'parse configuration {cfg} ...')
         with open(cfg,'r') as fh:
             text = fh.read()
@@ -51,16 +52,16 @@ class ROCompiler(LibertyMetric):
             if item=='':
                 continue
             token,v = re.split('[={]+',item)
-            if token=='top':
-                self.cfg['top'] = v.strip("\"'")
+            if token in ['top','outPath','targetCond'] :
+                self.cfg[token] = v.strip("\"'")
             else:
                 self.cfg[token] = eval('{'+v+'}') #eval(f'{{{v}}}')
         # legalize config
-        self.cfg['top'] = 'GRO_TOP' # disable configuration for SPI wrapper 2022/12
+        self.cfg['top'] = self.cfg.get('top','GRO_TOP') # disable configuration for SPI wrapper 2022/12
         if isinstance(self.cfg.get('lib'),set): # enclose set to list with a 'default' key
-            self.cfg['lib'] = {'default':list(self.cfg['lib'])} # to dictionary
+            self.cfg['lib'] = {'default':list(self.cfg.get('lib',{}))} # to dictionary
         if isinstance(self.cfg.get('lpe'),set): # enclose set to list with a 'default' key
-            self.cfg['lpe'] = list(self.cfg['lpe']) # to dictionary
+            self.cfg['lpe'] = list(self.cfg.get('lpe',{})) # to dictionary
         return self.cfg
     
     def loadLib(self,file):
@@ -101,7 +102,7 @@ class ROCompiler(LibertyMetric):
         return retL # list of (condition,library,cell,pins)
 
     def getCellFromLibDB(self,cell,target):
-        target = self.cfg['targetCond'] if target==None else target
+        target = target or self.cfg.get('targetCond','TT')
         ret = self.queryCellFromLibDB(cell,target)
         if ret==[]:
             print(f'ERROR! cannot find {cell}@{target} in JSON DB')
@@ -116,8 +117,8 @@ class ROCompiler(LibertyMetric):
         if self.libDB=={}:
             print('ERROR! please commit liberty JSON first')
             return False
-        if target not in self.cfg['lib'].keys():
-            print(f'ERROR! target condition should be one of {list(self.cfg["lib"].keys())}')
+        if target not in self.cfg.get('lib',{}).keys():
+            print(f'ERROR! target condition should be one of {list(self.cfg.get("lib",{}).keys())}')
             return False
         for term in ['enGate','invGate','cntDFF','delayLine']:
             if self.cfg.get(term)==None:
@@ -175,8 +176,8 @@ class ROCompiler(LibertyMetric):
     # grab transition, load and delay of the specified base gate
     def baseGateInfo(self,cell=None,trans=0.05,load=None,target=None):
         '''use self load if load is not specified'''
-        target = self.cfg['targetCond'] if target==None else target
-        cell = self.cfg['enGate']['name'] if cell==None else cell
+        target = target or self.cfg.get('targetCond','TT') 
+        cell = cell or self.cfg.get('enGate',{}).get('name','ND2D1')
         #cnode = self.get_cell(lnode,cell)
         lnode,cnode = self.getCellFromLibDB(cell,target)
         cap = self.lookup_cell_pincap(cnode)
@@ -278,7 +279,7 @@ class ROCompiler(LibertyMetric):
         if os.path.exists(self.cfg['outPath']+'/spice')==False:
             print(f"ERROR! output path {self.cfg['outPath']}/spice does not exist")
             return False
-        target = self.cfg['targetCond']
+        target = self.cfg.get('targetCond','TT')
         key = list(self.libDB[target][0]['operating_conditions'].keys())[0] # use the 1st opc
         opc = self.libDB[target][0]['operating_conditions'][key]
 
@@ -290,8 +291,8 @@ class ROCompiler(LibertyMetric):
         print(".temp TEMP",file=ofh)
         print(".inc './merge.spx'",file=ofh)
         print(f".inc './{self.cfg['top']}.spi'",file=ofh)
-        for card in self.cfg['model_card']:
-            model =  self.cfg['model_card'][card]
+        for card in self.cfg.get('model_card',{}):
+            model =  self.cfg.get('model_card',{}).get(card,'undefine')
             print(f".lib '{model}' {card}",file=ofh)
         print(".probe tran V(RO)",file=ofh)
         print(".option probe=1",file=ofh)
@@ -383,17 +384,17 @@ class ROCompiler(LibertyMetric):
             print(f"ERROR! output path {self.cfg['outPath']}/synthesis does not exist")
             return False  
         # check link library
-        for db in self.cfg['db']:
+        for db in self.cfg.get('db',{}):
             if os.path.exists(db)==False:
                 print(f'ERROR! the specified db {db} doesnot exist')
                 return False
         
         print('INFO: setup synthesis environment ...')
-        target = self.cfg['targetCond']
+        target = self.cfg.get('targetCond','TT')
         opc = list(self.libDB[target][0]['operating_conditions'].keys())[0] # use the 1st library
-        dbL = " ".join([v for v in self.cfg['db']])
-        vlog = " ".join(self.cfg['vlog'])
-        dbPath = " ".join([os.path.dirname(v) for v in self.cfg['db']])
+        dbL = " ".join([v for v in self.cfg.get('db',{})])
+        vlog = " ".join(self.cfg.get('vlog',{}))
+        dbPath = " ".join([os.path.dirname(v) for v in self.cfg.get('db',{})])
         minp = min([p for c,p,*a in self.cfg['delayLine'].values()])/1000 # min period
         cload = self.cfg['enGate']['cap']*4 # FO4
         out = f"{self.cfg['outPath']}/verilog/config.tcl"
@@ -434,7 +435,7 @@ class ROCompiler(LibertyMetric):
             return False
         
         # check link library
-        for vlog in self.cfg['vlog']:
+        for vlog in self.cfg.get('vlog',{}):
             if os.path.exists(vlog)==False:
                 print(f'ERROR! the specified vlog {vlog} doesnot exist')
                 return False
@@ -452,13 +453,13 @@ class ROCompiler(LibertyMetric):
         print(f'`define {"SEL_BITS":8s} {selBit:5d} // GRO : select bitwidth',file=ofh)
         print(f'`define {"RPC_BITS":8s} {cntBit:5d} // GRO : ripple counter bitWidth',file=ofh)
         #print(f'`define SDFFILE "../synthesis/Netlist/{top}_syn.sdf"',file=ofh)
-        spi_cycle  = self.cfg["SPI"].get('SPI_CYCLE') or 3333.3
-        spi_dwidth = self.cfg["SPI"].get('SPI_DWIDTH') or 16
-        spi_intc   = self.cfg["SPI"].get('INT_CYCLE') or 1000
-        spi_pattern = self.cfg["SPI"].get('PAT_NUM') or 10
-        spi_groc   = self.cfg["SPI"].get('GRO_CYCLE') or 10
-        spi_ro_num = self.cfg["SPI"].get('RO_GRID_NUM') or 16
-        spi_ro_enc = self.cfg["SPI"].get('RO_EN_COUNT_BITS') or 8
+        spi_cycle  = self.cfg.get("SPI",{}).get('SPI_CYCLE',  3333.3)
+        spi_dwidth = self.cfg.get("SPI",{}).get('SPI_DWIDTH', 16)
+        spi_intc   = self.cfg.get("SPI",{}).get('INT_CYCLE',  1000)
+        spi_pattern = self.cfg.get("SPI",{}).get('PAT_NUM',   10)
+        spi_groc   = self.cfg.get("SPI",{}).get('GRO_CYCLE',  10)
+        spi_ro_num = self.cfg.get("SPI",{}).get('RO_GRID_NUM', 16)
+        spi_ro_enc = self.cfg.get("SPI",{}).get('RO_EN_COUNT_BITS', 8)
         print(f'`define {"RO_ACTIVE":16s} {1:5d} // SPI : ro active flag',file=ofh)
         print(f'`define {"SPI_CYCLE":16s} {spi_cycle:5.1f} // SPI : controller clock period',file=ofh)
         print(f'`define {"SPI_DWIDTH":16s} {spi_dwidth:5d} // SPI : bitWidth',file=ofh)
@@ -478,26 +479,26 @@ class ROCompiler(LibertyMetric):
         print('INFO: setup SPICE environment ...')
         outPath = self.cfg['outPath']
         # LPE merge
-        if self.cfg['lpe']!={}:
-            lpeL = " ".join(self.cfg['lpe'])
+        if self.cfg.get('lpe',{})!={}:
+            lpeL = " ".join(self.cfg.get('lpe',{}))
             os.system(f'cat {lpeL} > {outPath}/spice/merge.spx')  
             print(f'merge {lpeL} into {outPath}/spice/merge.spx')
             print(f'===>{lpeL}\n\n')
         return True
 
     def initMakefile(self):
-        if os.path.exists(self.cfg['outPath'])==False:
+        if os.path.exists(self.cfg.get('outPath',''))==False:
             print(f"ERROR! the specified output path {self.cfg['outPath']} does not exist")
             return False
         print('INFO: create makefile ...')
         out = f"{self.cfg['outPath']}/makefile"
         ofh = open(out,'w') 
-        vlog = " \\\n            ".join([v for v in self.cfg['vlog']])
+        vlog = " \\\n            ".join([v for v in self.cfg.get('vlog',{})])
         print(f'# auto build by GRO compiler {self.date}',file=ofh)
-        print(f"CONFIG     = {self.cfg['configFile']}",file=ofh)
-        print(f"OUTPATH    = {self.cfg['outPath']}",file=ofh)
-        print(f"TOP        = {self.cfg['top']}",file=ofh)
-        print(f"TARGETCOND = {self.cfg['targetCond']}",file=ofh)
+        print(f"CONFIG     = {self.cfg.get('configFile','')}",file=ofh)
+        print(f"OUTPATH    = {self.cfg.get('outPath','')}",file=ofh)
+        print(f"TOP        = {self.cfg.get('top','')}",file=ofh)
+        print(f"TARGETCOND = {self.cfg.get('targetCond','')}",file=ofh)
         print(f"VLOG       = {vlog}",file=ofh)
         print("",file=ofh)
         print("init: ${CONFIG}",file=ofh)
@@ -568,16 +569,16 @@ class ROCompiler(LibertyMetric):
     # load & convert CCS liberty to JSON 
     def initLibJSON(self,condL=None):
         outPath = self.cfg['outPath']+'/metric/JSON'
-        if self.cfg.get('lib')==None:
+        if self.cfg.get('lib',{})=={}:
             print('ERROR: please specify iberty in the configuration first')
             return False
         if os.path.exists(outPath)==False:
             print('ERROR! please create project directory first')
             return False
-        condL = list(self.cfg['lib'].keys()) if condL==None else condL
+        condL = list(self.cfg.get('lib',{}).keys()) if condL==None else condL
         print(f'init JSON DB: corner list {condL}')
         for cond in condL:
-            for lib in self.cfg['lib'][cond]:
+            for lib in self.cfg.get('lib').get(cond):
                 lnode = self.loadLib(lib)
                 json = lib.split('/')[-1].split('.')[0]+'.json'
                 self.dump_json(lnode, out=f'{outPath}/{json}')
@@ -598,32 +599,36 @@ class ROCompiler(LibertyMetric):
             print('ERROR: please specify config file first')
             return False
         
-        if self.cfg['targetCond'] not in self.cfg['lib'].keys():
-            print(f"ERROR: target condition should be one of {list(self.cfg['lib'].keys())}")
+        if self.cfg.get('targetCond','TT') not in self.cfg.get('lib',{}).keys():
+            print(f"ERROR: target condition should be one of {list(self.cfg.get('lib',{}).keys())}")
             return False
 
         # load JSON DB, need to perform initLibJSON first
         if self.libDB=={}:
-            target = self.cfg['targetCond']
+            target = self.cfg.get('targetCond','TT')
             self.libDB[target] = []
             print(f'INFO! auto commit liberty from JSON DB, target cond: {target} ...')
-            libL = list(self.cfg['lib'][target])
+            libL = list(self.cfg.get('lib',{}).get(target))
             for lib in libL:
                 json = os.path.basename(lib).split('.')[0]+'.json'
                 lnode = self.loadLib(self.cfg['outPath']+'/metric/JSON/'+json)
                 self.libDB[target] += [lnode]
         
         # RO component integrity check
-        if self.integrityCheck(self.cfg['targetCond'])==False: # GRO component integrity check, cfg update
+        if self.integrityCheck(self.cfg.get('targetCond','TT'))==False: # GRO component integrity check, cfg update
             print('ERROR: please check the liberty integrity, containing all necessary GRO components')
             return False
         
         # build successive sub flows
-        ret = all([
-            self.envSetupDC(),
-            self.envSetupVsim(),
-            self.envSetupSPICE()
-            ])
+        try:
+            ret = all([
+                self.envSetupDC(),
+                self.envSetupVsim(),
+                self.envSetupSPICE()
+                ])
+        except:
+            print('ERROR: some environments (DC, Vsim, SPICE) were not successfully established')
+            ret = False
         return ret
     
     def initProjectDirectory(self):
@@ -663,7 +668,6 @@ class ROCompiler(LibertyMetric):
         pdata,code = {},True
         while ii<argc:
             v = argv[ii]
-            #print(f'  [{ii}] {v}')
             if v[:2]=='-h':
                 print('Grid RO Compiler')
                 print('usage:\n    python3 {script} -cfg <config.cfg> [options]\n')
@@ -724,16 +728,16 @@ class ROCompiler(LibertyMetric):
 
 
 #%% verify
-if __name__ == '__main__':
+if False: #__name__ == '__main__':
 
     gro = ROCompiler()
     
-    # library conversion
-    #lnode = gro.read_lib('liberty_ccs.lib')
-    #gro.dump_json(lnode,'liberty_ccs.json')
+    # concert liberty to JSON
+    lnode = gro.read_lib('liberty_ccs.lib')
+    gro.dump_json(lnode,'liberty_ccs.json')
     
     # query GRO components with cell_footprint
-    lnode = gro.loadLib('/metric/JSON/liberty_ccs.json')
+    lnode = gro.loadLib('liberty_ccs.json')
     nd2 = gro.queryCellWithFP(lnode,fp='nd2d1')
     nr2 = gro.queryCellWithFP(lnode,fp='nr2d1')
     dff = gro.queryCellWithFP(lnode,fp='dfqd1')
@@ -752,10 +756,9 @@ if __name__ == '__main__':
     
     #%% GRO compiler 
     cfg = gro.loadConfig('config.f')
-    gro.compileGRO(
-        'TT,0.8V,25C', # liberty corner specified in the configuration
-        out='/GRO/verilog/GRO.v')
-    
-    gro.envSetupDC(
-        out='/GRO/verilog/config.tcl')
+    gro.initProjectDirectory()
+    gro.initMakefile()
+    gro.initLibJSON() # build library JSON DB
+    gro.commitConfig() # start from liberty JSON without initLibJSON
+    gro.compileGRO()
     
