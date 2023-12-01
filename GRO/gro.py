@@ -23,23 +23,28 @@ Revision history:
 
 #%% 
 import sys
-#sys.path.append('C:/Home/Projects/Pypi/DTCO')
+sys.path.append('C:/Home/Projects/Pypi/release/DTCO')
 #pip install DTCO
 from GRO import ROCompiler 
 
 if __name__ == '__main__':
     argv = sys.argv
 else: # test mode
-    argv = ['C:/Home/Projects/Pypi/DTCO/GRO/gro.py',
-            '-config','C:/Home/Projects/Pypi/DTCO/GRO/demo/config_demo.f',
-            '-outDir','C:/Home/Projects/Pypi/DTCO/GRO/demo/RO_demo',
-            '-target','TT']
-
+    argv = ['this',
+            '-config','C:/Home/Projects/Pypi/release/DTCO/GRO/demo/config_demo.f',
+            '-outPath','C:/Temp/GRO',
+            '-target','TT',
+            '-initProj','-initLib','-buildRO']
+    argv2 = ['this',
+        '-outPath','C:/Temp/GRO2',     
+        '-config','C:/Home/Projects/Pypi/release/DTCO/GRO/demo/config_demo2.f',
+        '-initProj','-initLib','-buildRO']
+    
 # init GRO instance
 gro = ROCompiler()
 
 #%% parse command line
-code,pdata = gro.parseArguments(argv)
+code,pdata = gro.parseArguments(argv2)
 
 # update pdata from config
 if pdata.get('configFile')!=None:
