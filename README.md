@@ -1,3 +1,39 @@
+**Preliminary**
+
+Liberty Metric Extraction
+
+Grid RO Compiler
+
+---
+
+**Copernic System**
+
+Generated Model for Virtual Silicon
+
+WAT Analysis
+
+CP Analysis
+
+
+---
+
+**Design & Technology C-optimization**
+
+Process Uniformity & OCV Analysis
+
+Machine-learning Framework
+
+Binning Strategy
+
+---
+
+
+**Installation**
+```
+pip install DTCO
+
+```
+
 **Liberty Metric Package**
 
 ```
@@ -59,12 +95,7 @@ lutil.plot_lut(lutT,keys=[('CP,D,CDN', 'setup_rising', 'rise_constraint'),
 ```
 
 
-
-
-
-
 ---
-
 
 
 **GRO Compiler Package**
@@ -76,9 +107,9 @@ import sys
 if __name__ == '__main__':
     argv = sys.argv
 else: # test mode
-    argv = ['C:/Home/Projects/Pypi/DTCO/GRO/gro.py',
-            '-config','C:/Home/Projects/Pypi/DTCO/GRO/demo/config_demo.f',
-            '-outDir','C:/Home/Projects/Pypi/DTCO/GRO/demo/RO_demo',
+    argv = ['.',
+            '-config','config_demo.f',
+            '-outPath','RO_demo',
             '-target','TT']
 
 # init GRO instance
@@ -103,10 +134,58 @@ if pdata.get('lpe')!=None:
 ```
 
 ---
+**DTCO Platform**
 
-**Design & Technology C-optimization**
+```
+from copernic import dtco
 
-Process Uniformity & OCV Analysis
+# load the pre-trained model and generate 300 virtual silicon wafers
+dt = dtco.genFakeData('/content/gmodel_C10.pkl',num=300).set_index(['WID'])
 
-Machine-learning Framework
+# CP data
+dtco.batchFeature(dt,feature='SIDD',num=10,ncol=5,dtype='2d')
+dtco.batchFeature(dt,feature='ROu',num=10,ncol=5,dtype='2d')
+
+# WAT data
+dtco.batchFeature(dt,feature='VTS_ULVT_N',num=10,ncol=5,dtype='3d')
+dtco.batchFeature(dt,feature='VTS_ULVT_P',num=10,ncol=5,dtype='3d')
+
+# # batch visualization on web UI
+dtco.batchFeaturePlotly(dt,feature='SIDD',widL=range(1,9),ncol=4)
+
+# all wafer scatter, 200 sub samples steps
+dtco.featureScatter(dt.iloc[::200],wid=None,fx='ROu',fy='SIDD',s=2,alpha=0.1)
+
+# single wafer scatter and die XY location on the feature surface
+dtco.featureScatter(dt,wid=1,fx='ROu',fy='SIDD',s=10,alpha=0.5)
+
+# feature surface
+dtco.featureSurface(dt,wid=1,feature='SIDD',sigma=2.5)
+
+# visualization on web UI
+dtco.featureSurfacePlotly(dt,wid=1,feature='SIDD',sigma=2.5)
+
+```
+Productivity Enhancement
+```
+dw = dtco.waferSort(dt,itemL=['ROu','SIDD'],nsize=300)
+
+# PCM density 3D
+binx,biny,H = dtco.pcmDensity3D(dt,fx='ROu',fy='SIDD',sigma=2.5)
+
+# PCM density 2D
+binx,biny,H = dtco.pcmDensity2D(dt,fx='ROu',fy='SIDD',sigma=2.5)
+
+# yield assessment
+dtco.pcmDensity(dt,fx='ROu',fy='SIDD',sigma=2.5,percentiles=[1,5,10,20,30])
+
+# 2D binning evaluation, boundary and bin yield
+hbin = dtco.pcmBinning(dt,fx='ROu',fy='SIDD',sigma=2.5,bins=(4,6))
+
+# compromise design recipe/strategy and yield assessment
+dtco.pcmYieldAssessment(dt,fx='ROu',fy='SIDD',percentiles=[10,20,30],sigma=2.5)
+
+```
+
+---
 
