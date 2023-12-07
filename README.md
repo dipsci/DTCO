@@ -17,7 +17,7 @@ CP Analysis
 
 ---
 
-**Design & Technology C-optimization**
+**Design & Technology Co-optimization**
 
 Process Uniformity & OCV Analysis
 
